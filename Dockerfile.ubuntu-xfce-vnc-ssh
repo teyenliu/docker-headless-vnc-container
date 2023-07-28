@@ -1,0 +1,122 @@
+# This Dockerfile is used to build an headles vnc image based on Debian
+
+FROM ubuntu:18.04
+
+MAINTAINER Sven Nierlein "sven@consol.de"
+ENV REFRESHED_AT 2023-01-27
+
+LABEL io.k8s.description="Headless VNC Container with Xfce window manager, firefox and chromium" \
+      io.k8s.display-name="Headless VNC Container based on Ubuntu" \
+      io.openshift.expose-services="6901:http,5901:xvnc,22:ssh" \
+      io.openshift.tags="vnc, ubuntu, xfce, ssh" \
+      io.openshift.non-scalable=true
+
+## Connection ports for controlling the UI:
+# VNC port:5901
+# noVNC webport, connect via http://IP:6901/?password=vncpassword
+ENV DISPLAY=:1 \
+    VNC_PORT=5901 \
+    NO_VNC_PORT=6901 \
+    SSH_PORT=22
+EXPOSE $VNC_PORT $NO_VNC_PORT $SSH_PORT
+
+### SSH
+# Install necessary packages
+RUN apt-get update && \
+    apt-get install -y openssh-server xauth x11-apps dbus-x11 ffmpeg thunar \
+    sudo git curl vim unzip openssh-client wget ca-certificates
+
+# Configure SSH server
+RUN mkdir /var/run/sshd
+
+ARG USERNAME=testuser
+ARG GROUPNAME=testusergroup
+ARG USER_UID=1000
+ARG USER_GID=1000
+# Add a new user 'testuser' and set password
+RUN groupadd --gid $USER_GID $GROUPNAME \
+    && useradd --uid $USER_UID --gid $USER_GID --create-home --shell /bin/bash $USERNAME \
+    && echo "$USERNAME ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers.d/$USERNAME \
+    && chmod 0440 /etc/sudoers.d/$USERNAME
+
+# Add 'testuser' to the sudoers group
+RUN echo "usermod -aG sudo $USERNAME"
+
+ARG SHAREDGROUPNAME=sharedgroup
+ARG SHARED_GID=1010
+# Add a new usergroup 'sharedgroup'
+RUN groupadd --gid $SHARED_GID $SHAREDGROUPNAME
+# Add new user to usergroup
+RUN usermod -a -G $SHARED_GID $USERNAME
+
+# Change password
+RUN echo "$USERNAME:testpassword" | chpasswd
+RUN echo "root:root12345" | chpasswd
+
+### Envrionment config
+ENV HOME=/home/$USERNAME \
+    TERM=xterm \
+    STARTUPDIR=/dockerstartup \
+    INST_SCRIPTS=/headless/install \
+    NO_VNC_HOME=/headless/noVNC \
+    DEBIAN_FRONTEND=noninteractive \
+    VNC_COL_DEPTH=24 \
+    VNC_RESOLUTION=1280x1024 \
+    VNC_PW=vncpassword \
+    VNC_VIEW_ONLY=false
+
+#USER root
+#WORKDIR /
+
+### Add all install scripts for further steps
+ADD ./src/common/install/ $INST_SCRIPTS/
+ADD ./src/ubuntu/install/ $INST_SCRIPTS/
+
+### Install some common tools
+RUN $INST_SCRIPTS/tools.sh
+ENV LANG=C.UTF-8 LC_ALL=C.UTF-8
+
+### Install custom fonts
+RUN $INST_SCRIPTS/install_custom_fonts.sh
+
+### Install xvnc-server & noVNC - HTML5 based VNC viewer
+RUN $INST_SCRIPTS/tigervnc.sh
+RUN $INST_SCRIPTS/no_vnc.sh
+
+### Install firefox and chrome browser
+RUN $INST_SCRIPTS/firefox.sh
+RUN $INST_SCRIPTS/chrome.sh
+
+### Install xfce UI
+RUN $INST_SCRIPTS/xfce_ui.sh
+ADD ./src/common/xfce/ $HOME/
+
+### configure startup
+RUN $INST_SCRIPTS/libnss_wrapper.sh
+ADD ./src/common/scripts $STARTUPDIR
+RUN $INST_SCRIPTS/set_user_permission.sh $STARTUPDIR $HOME
+
+# Setup sshd_config
+RUN sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin yes/' /etc/ssh/sshd_config
+#RUN sed -i 's/#PubkeyAuthentication yes/PubkeyAuthentication yes/' /etc/ssh/sshd_config
+RUN sed -i 's/#PasswordAuthentication yes/PasswordAuthentication yes/' /etc/ssh/sshd_config
+RUN sed -i 's/#X11Forwarding no/X11Forwarding yes/' /etc/ssh/sshd_config
+RUN sed -i 's/#X11UseLocalhost yes/X11UseLocalhost yes/' /etc/ssh/sshd_config
+# SSH login fix. Otherwise user is kicked off after login
+RUN sed 's@session\s*required\s*pam_loginuid.so@session optional pam_loginuid.so@g' -i /etc/pam.d/sshd
+RUN echo "X11Forwarding yes" >> /etc/ssh/sshd_config
+RUN echo "X11UseLocalhost yes" >> /etc/ssh/sshd_config
+RUN echo "AllowUsers root $USERNAME" >> /etc/ssh/sshd_config
+
+ENV NOTVISIBLE "in users profile"
+RUN echo "export VISIBLE=now" >> /etc/profile
+RUN echo "ClientAliveInterval 120" >> /etc/ssh/sshd_config
+
+RUN echo "export PATH=$PATH" >> /etc/profile && \
+    echo "alias ll='ls -al'" >> /etc/profile
+
+USER $USERNAME
+WORKDIR $HOME
+
+ENTRYPOINT ["/dockerstartup/vnc_startup.sh"]
+CMD ["sh", "-c", "sudo /usr/sbin/sshd -D"]

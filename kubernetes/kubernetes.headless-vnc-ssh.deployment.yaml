@@ -1,0 +1,65 @@
+#### POD config (run one time)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: headless-vnc-ssh
+  labels:
+    app: headless-vnc-ssh
+spec:
+  # 1 Pods should exist at all times.
+  replicas: 1
+  selector:
+    matchLabels:
+      app: headless-vnc-ssh
+  template:
+    metadata:
+      labels:
+        app: headless-vnc-ssh
+    spec:
+      securityContext:
+        #runAsUser: 0
+        #runAsGroup: 0
+      containers:
+      - name: headless-vnc-ssh
+        image: local/ubuntu-xfce-vnc-ssh
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 5901
+        - containerPort: 6901
+        - containerPort: 22
+        env:
+        - name: TZ
+          value: "Asia/Taipei"
+        args:
+          ### make normal UI startup to connect via: oc rsh <pod-name> bash
+          #- '--tail-log'
+---
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    app: headless-vnc-ssh
+  name: headless-vnc-ssh
+spec:
+  externalName: headless-vnc-ssh
+  ports:
+  - name: http-port-tcp
+    protocol: TCP
+    port: 6901
+    targetPort: 6901
+    nodePort: 32001
+  - name: vnc-port-tcp
+    protocol: TCP
+    port: 5901
+    targetPort: 5901
+    nodePort: 32002
+  - name: ssh-port-tcp
+    protocol: TCP
+    port: 2222
+    targetPort: 22
+    nodePort: 30222
+  selector:
+    app: headless-vnc-ssh
+  type: NodePort
+# Use type loadbalancer if needed
+#  type: LoadBalancer
